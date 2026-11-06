@@ -107,7 +107,7 @@ footer{padding:14px 18px;font-size:12px;color:var(--muted)}
     <div class="legend" aria-label="Legend">
       <b>Legend</b>
       <span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="#3fc1c9" fill-opacity=".85" stroke="#0f1b2d"/></svg>USGS stream gauge (size = flow)</span>
-      <span><i class="sw" style="background:rgba(79,143,224,.45);border:1px solid #4f8fe0"></i>FEMA flood hazard areas (NFHL; 100-yr zones highlighted near a searched address)</span>
+      <span><i class="sw" style="background:rgba(79,143,224,.45);border:1px solid #4f8fe0"></i>FEMA 100-year flood zone (A / AE). Zoom in to see it.</span>
       <span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="#e8604c" stroke="#fff" stroke-width="2"/></svg>Searched address</span>
     </div>
   </div>
@@ -166,7 +166,6 @@ footer{padding:14px 18px;font-size:12px;color:var(--muted)}
 const API = {
   geocode: "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
   flood:   "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Flood_Hazard_Reduced_Set_gdb/FeatureServer/0/query", // FEMA NFHL, Esri Living Atlas
-  floodMap:"https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/export",   // FEMA NFHL flood hazard zones (layer 28)
   county:  "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/State_County/MapServer/1/query",
   usgs:    "https://waterservices.usgs.gov/nwis/iv/",
   nws:     "https://api.weather.gov/alerts/active"
@@ -229,24 +228,28 @@ L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_D
   maxZoom: 16, pane: "overlayPane"
 }).addTo(map);
 
-// FEMA flood hazard zones drawn by FEMA's NFHL MapServer, requested only after the map stops moving
+// FEMA 100-year flood zones (Special Flood Hazard Areas), queried for the visible area
+// after the map stops moving and drawn in this page's own colors
 const floodImg = L.layerGroup().addTo(map);
-let floodLogged = false;
-function refreshFlood() {
-  if (!map.hasLayer(floodImg) || map.getZoom() < 11) { floodImg.clearLayers(); return; }
-  const b = map.getBounds(), s = map.getSize();
-  const params = { bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","), bboxSR: 4326, imageSR: 3857,
-    size: s.x + "," + s.y, layers: "show:28", transparent: true, format: "png32", dpi: 96, f: "image" };
-  const url = API.floodMap + "?" + new URLSearchParams(params).toString();
-  const img = L.imageOverlay(url, b, { opacity: 0.6, interactive: false });
-  const t0 = performance.now();
-  img.on("load", () => { floodImg.eachLayer(l => { if (l !== img) floodImg.removeLayer(l); });
-    if (!floodLogged) { floodLogged = true; logCall("Flood hazard zones · FEMA NFHL export", url, true, Math.round(performance.now() - t0), "map image"); } });
-  img.on("error", () => logCall("Flood hazard zones · FEMA NFHL export", url, false, Math.round(performance.now() - t0), "image failed"));
-  floodImg.addLayer(img);
+let floodReq = 0, floodLogged = false;
+async function refreshFlood() {
+  if (!map.hasLayer(floodImg)) return;
+  if (map.getZoom() < 12) { floodImg.clearLayers(); return; }
+  const b = map.getBounds(), my = ++floodReq;
+  const params = { where: "SFHA_TF='T'", geometry: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","), geometryType: "esriGeometryEnvelope", inSR: 4326,
+    spatialRel: "esriSpatialRelIntersects", outFields: "FLD_ZONE", returnGeometry: true, outSR: 4326,
+    maxAllowableOffset: map.getZoom() >= 15 ? 0.00002 : 0.0001, geometryPrecision: 6, resultRecordCount: 1500, f: "geojson" };
+  try {
+    const d = floodLogged ? await (await fetch(API.flood + "?" + new URLSearchParams(params))).json()
+                          : await apiGet("FEMA 100-yr flood zones in view · Living Atlas NFHL", API.flood, params);
+    floodLogged = true;
+    if (my !== floodReq) return;
+    floodImg.clearLayers();
+    L.geoJSON(d, { interactive: false, style: { color: "#4f8fe0", weight: 1, fillColor: "#4f8fe0", fillOpacity: 0.4 } }).addTo(floodImg);
+  } catch (e) {}
 }
 let hazTimer;
-function refreshHazards() { clearTimeout(hazTimer); hazTimer = setTimeout(refreshFlood, 700); }
+function refreshHazards() { clearTimeout(hazTimer); hazTimer = setTimeout(refreshFlood, 600); }
 map.on("moveend", refreshHazards);
 map.on("overlayadd", refreshHazards);
 
@@ -257,7 +260,7 @@ const layers = {
   address: L.layerGroup().addTo(map)
 };
 L.control.layers({ "Dark gray": darkGray, "Imagery": imagery },
-  { "FEMA flood hazard zones (zoom in)": floodImg, "Stream gauges": layers.gauges, "Hazards near searched address": layers.hazards }, { position: "topright", collapsed: false }).addTo(map);
+  { "FEMA 100-year flood zones (zoom in)": floodImg, "Stream gauges": layers.gauges, "Hazards near searched address": layers.hazards }, { position: "topright", collapsed: false }).addTo(map);
 
 // Esri JSON polygon (rings) -> Leaflet [lat,lng] rings
 const ringsToLatLngs = g => (g && g.rings ? g.rings.map(r => r.map(([x, y]) => [y, x])) : []);
