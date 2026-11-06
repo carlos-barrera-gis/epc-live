@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EPC Live Conditions</title>
-<meta name="description" content="Live map of El Paso County, Colorado: county GIS REST services, USGS stream gauges and National Weather Service alerts, queried in real time.">
+<meta name="description" content="Live map of El Paso County, Colorado: FEMA flood hazard areas, USGS stream gauges and National Weather Service alerts, queried in real time.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
@@ -103,13 +103,11 @@ footer{padding:14px 18px;font-size:12px;color:var(--muted)}
   </header>
 
   <div class="mapwrap">
-    <div id="map" role="application" aria-label="Map of El Paso County with live stream gauges, hazard layers and commissioner districts"></div>
+    <div id="map" role="application" aria-label="Map of El Paso County with live stream gauges and FEMA flood hazard areas"></div>
     <div class="legend" aria-label="Legend">
       <b>Legend</b>
       <span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="#3fc1c9" fill-opacity=".85" stroke="#0f1b2d"/></svg>USGS stream gauge (size = flow)</span>
-      <span><i class="sw" style="background:rgba(79,143,224,.45);border:1px solid #4f8fe0"></i>100-year floodplain (county layer; highlighted near a searched address)</span>
-      <span><i class="sw" style="background:rgba(224,163,58,.35);border:1px solid #e0a33a"></i>Wildland-urban interface (turn on in the layer list)</span>
-      <span><i class="sw" style="border:2px solid #d4a43a"></i>Commissioner district</span>
+      <span><i class="sw" style="background:rgba(79,143,224,.45);border:1px solid #4f8fe0"></i>FEMA flood hazard areas (NFHL; 100-yr zones highlighted near a searched address)</span>
       <span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="#e8604c" stroke="#fff" stroke-width="2"/></svg>Searched address</span>
     </div>
   </div>
@@ -117,7 +115,7 @@ footer{padding:14px 18px;font-size:12px;color:var(--muted)}
   <aside>
     <section>
       <h2>Check an address</h2>
-      <p class="src">County geocoder → floodplain, WUI and district queries</p>
+      <p class="src">Esri World Geocoder → FEMA flood hazard query</p>
       <form id="addrForm">
         <label class="sr" for="addr">Address in El Paso County</label>
         <input type="text" id="addr" placeholder="e.g. 200 S Cascade Ave, Colorado Springs" autocomplete="off">
@@ -150,7 +148,7 @@ footer{padding:14px 18px;font-size:12px;color:var(--muted)}
     </section>
 
     <footer>
-      Built by Carlos Barrera. Data from El Paso County public GIS REST services, USGS Water Services and the National Weather Service. Not an official county product; verify conditions with official sources.
+      Built by Carlos Barrera. Data from FEMA (National Flood Hazard Layer), Esri World Geocoder, U.S. Census TIGERweb, USGS Water Services and the National Weather Service. Not an official county product; verify conditions with official sources.
     </footer>
   </aside>
 </div>
@@ -164,16 +162,16 @@ footer{padding:14px 18px;font-size:12px;color:var(--muted)}
    the results with Leaflet.
    ============================================================ */
 
-// ---- 1. The APIs ------------------------------------------------
-const EPC = "https://gisservices.elpasoco.com/arcgis2/rest/services/Public";
+// ---- 1. The APIs (federal and Esri public services only) ----------
 const API = {
-  geocode:   EPC + "/EPCPortalLocator2026/GeocodeServer/findAddressCandidates",
-  hazards:   EPC + "/TetraTechPPROEMHazards/FeatureServer",   // layer 7 = FL100, 1 = WUI, 9 = County boundary
-  districts: EPC + "/CommissionerDistricts/FeatureServer/0/query",
-  usgs:      "https://waterservices.usgs.gov/nwis/iv/",
-  nws:       "https://api.weather.gov/alerts/active"
+  geocode: "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates",
+  flood:   "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Flood_Hazard_Reduced_Set_gdb/FeatureServer/0/query", // FEMA NFHL, Esri Living Atlas
+  floodMap:"https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/export",   // FEMA NFHL flood hazard zones (layer 28)
+  county:  "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/State_County/MapServer/1/query",
+  usgs:    "https://waterservices.usgs.gov/nwis/iv/",
+  nws:     "https://api.weather.gov/alerts/active"
 };
-const LAYER = { FL100: 7, WUI: 1, COUNTY: 9 };
+const EPC_EXTENT = "-105.10,38.51,-103.90,39.13";
 
 // ---- 2. A logged fetch: times every request and shows it in the API log
 async function apiGet(label, base, params) {
@@ -231,71 +229,46 @@ L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_D
   maxZoom: 16, pane: "overlayPane"
 }).addTo(map);
 
-// County hazard layers drawn by the county's own MapServer (export operation),
-// re-requested for the visible area every time the map moves.
-const HAZ_MS = EPC + "/TetraTechPPROEMHazards/MapServer/export";
-const floodImg = L.layerGroup().addTo(map), wuiImg = L.layerGroup();
-const loggedExport = {};
-// dynamicLayers lets the request set the colors, so the map matches this page's legend
-function dynLayer(id, rgb) {
-  return JSON.stringify([{ id, source: { type: "mapLayer", mapLayerId: id }, drawingInfo: { renderer: { type: "simple",
-    symbol: { type: "esriSFS", style: "esriSFSSolid", color: [...rgb, 150], outline: { type: "esriSLS", style: "esriSLSSolid", color: [...rgb, 255], width: 0.6 } } } } }]);
-}
-const HAZ_COLOR = { [LAYER.FL100]: [79, 143, 224], [LAYER.WUI]: [224, 163, 58] };
-function refreshHazardImage(group, layerId, label, opacity) {
-  if (!map.hasLayer(group)) return;
+// FEMA flood hazard zones drawn by FEMA's NFHL MapServer, requested only after the map stops moving
+const floodImg = L.layerGroup().addTo(map);
+let floodLogged = false;
+function refreshFlood() {
+  if (!map.hasLayer(floodImg) || map.getZoom() < 11) { floodImg.clearLayers(); return; }
   const b = map.getBounds(), s = map.getSize();
   const params = { bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","), bboxSR: 4326, imageSR: 3857,
-    size: s.x + "," + s.y, dynamicLayers: dynLayer(layerId, HAZ_COLOR[layerId]), transparent: true, format: "png32", dpi: 96, f: "image" };
-  const url = HAZ_MS + "?" + new URLSearchParams(params).toString();
-  const img = L.imageOverlay(url, b, { opacity, interactive: false });
+    size: s.x + "," + s.y, layers: "show:28", transparent: true, format: "png32", dpi: 96, f: "image" };
+  const url = API.floodMap + "?" + new URLSearchParams(params).toString();
+  const img = L.imageOverlay(url, b, { opacity: 0.6, interactive: false });
   const t0 = performance.now();
-  img.on("load", () => {
-    group.eachLayer(l => { if (l !== img) group.removeLayer(l); });
-    if (!loggedExport[label]) { loggedExport[label] = true; logCall(label + " · EPC MapServer export", url, true, Math.round(performance.now() - t0), "map image"); }
-  });
-  img.on("error", () => logCall(label + " · EPC MapServer export", url, false, Math.round(performance.now() - t0), "image failed"));
-  group.addLayer(img);
+  img.on("load", () => { floodImg.eachLayer(l => { if (l !== img) floodImg.removeLayer(l); });
+    if (!floodLogged) { floodLogged = true; logCall("Flood hazard zones · FEMA NFHL export", url, true, Math.round(performance.now() - t0), "map image"); } });
+  img.on("error", () => logCall("Flood hazard zones · FEMA NFHL export", url, false, Math.round(performance.now() - t0), "image failed"));
+  floodImg.addLayer(img);
 }
 let hazTimer;
-function refreshHazards() {
-  clearTimeout(hazTimer);
-  hazTimer = setTimeout(() => { refreshHazardImage(floodImg, LAYER.FL100, "100-yr floodplain", 0.65); refreshHazardImage(wuiImg, LAYER.WUI, "Wildfire WUI", 0.45); }, 250);
-}
+function refreshHazards() { clearTimeout(hazTimer); hazTimer = setTimeout(refreshFlood, 700); }
 map.on("moveend", refreshHazards);
 map.on("overlayadd", refreshHazards);
 
 const layers = {
   county: L.layerGroup().addTo(map),
-  districts: L.layerGroup().addTo(map),
   hazards: L.layerGroup().addTo(map),
   gauges: L.layerGroup().addTo(map),
   address: L.layerGroup().addTo(map)
 };
 L.control.layers({ "Dark gray": darkGray, "Imagery": imagery },
-  { "100-year floodplain (county)": floodImg, "Wildland-urban interface (county)": wuiImg, "Stream gauges": layers.gauges,
-    "Commissioner districts": layers.districts, "Hazards near searched address": layers.hazards }, { position: "topright", collapsed: false }).addTo(map);
+  { "FEMA flood hazard zones (zoom in)": floodImg, "Stream gauges": layers.gauges, "Hazards near searched address": layers.hazards }, { position: "topright", collapsed: false }).addTo(map);
 
 // Esri JSON polygon (rings) -> Leaflet [lat,lng] rings
 const ringsToLatLngs = g => (g && g.rings ? g.rings.map(r => r.map(([x, y]) => [y, x])) : []);
 
-// ---- 4. County layers: boundary and commissioner districts ------
+// ---- 4. County outline from U.S. Census TIGERweb ---------------
 async function loadCounty() {
   try {
-    const d = await apiGet("County boundary · EPC FeatureServer", `${API.hazards}/${LAYER.COUNTY}/query`, {
-      where: "1=1", outFields: "", returnGeometry: true, outSR: 4326, maxAllowableOffset: 0.001, f: "json"
+    const d = await apiGet("County outline · Census TIGERweb", API.county, {
+      where: "GEOID='08041'", outFields: "NAME", returnGeometry: true, outSR: 4326, maxAllowableOffset: 0.001, f: "json"
     });
     d.features.forEach(f => L.polygon(ringsToLatLngs(f.geometry), { color: "#9fb0c6", weight: 1.5, fill: false, dashArray: "4 4", interactive: false }).addTo(layers.county));
-  } catch (e) {}
-  try {
-    const d = await apiGet("Commissioner districts · EPC FeatureServer", API.districts, {
-      where: "1=1", outFields: "COM_DIST", returnGeometry: true, outSR: 4326, maxAllowableOffset: 0.0008, f: "json"
-    });
-    d.features.forEach(f => {
-      const p = L.polygon(ringsToLatLngs(f.geometry), { color: "#d4a43a", weight: 2, fillOpacity: 0.03 })
-        .bindTooltip("District " + f.attributes.COM_DIST, { permanent: true, direction: "center", className: "distlbl" })
-        .addTo(layers.districts);
-    });
   } catch (e) {}
 }
 
@@ -374,10 +347,10 @@ async function checkAddress(text) {
   const out = document.getElementById("result");
   out.innerHTML = '<div class="empty">Looking up the address…</div>';
   try {
-    const g = await apiGet("Geocode address · EPC GeocodeServer", API.geocode, {
-      SingleLine: text, Address: text, outSR: 4326, maxLocations: 1, outFields: "Match_addr,Addr_type", f: "json"
+    const g = await apiGet("Geocode address · Esri World Geocoder", API.geocode, {
+      SingleLine: /colorado|, co\b/i.test(text) ? text : text + ", CO", searchExtent: EPC_EXTENT, outSR: 4326, maxLocations: 1, f: "json"
     });
-    if (!g.candidates || !g.candidates.length) { out.innerHTML = '<div class="empty">No match in the county locator. Try a full street address.</div>'; return; }
+    if (!g.candidates || !g.candidates.length || g.candidates[0].score < 80) { out.innerHTML = '<div class="empty">No confident match. Try a full street address in El Paso County.</div>'; return; }
     const c = g.candidates[0], lon = c.location.x, lat = c.location.y;
     const pt = JSON.stringify({ x: lon, y: lat, spatialReference: { wkid: 4326 } });
     const pointQuery = { geometry: pt, geometryType: "esriGeometryPoint", inSR: 4326, spatialRel: "esriSpatialRelIntersects", returnGeometry: false, f: "json" };
@@ -385,17 +358,13 @@ async function checkAddress(text) {
     const areaQuery = { geometry: env, geometryType: "esriGeometryEnvelope", inSR: 4326, spatialRel: "esriSpatialRelIntersects", returnGeometry: true, outSR: 4326, maxAllowableOffset: 0.00003, resultRecordCount: 300, outFields: "", f: "json" };
 
     // Run the queries in parallel
-    const [inFlood, inWui, dist, floodNear, wuiNear] = await Promise.all([
-      apiGet("Floodplain at point · FL100", `${API.hazards}/${LAYER.FL100}/query`, { ...pointQuery, outFields: "" }).catch(() => null),
-      apiGet("WUI at point · WUI", `${API.hazards}/${LAYER.WUI}/query`, { ...pointQuery, outFields: "" }).catch(() => null),
-      apiGet("District at point · Commissioner Districts", API.districts, { ...pointQuery, outFields: "COM_DIST" }).catch(() => null),
-      apiGet("Floodplain nearby · FL100", `${API.hazards}/${LAYER.FL100}/query`, areaQuery).catch(() => null),
-      apiGet("WUI nearby · WUI", `${API.hazards}/${LAYER.WUI}/query`, areaQuery).catch(() => null)
+    const [inFlood, floodNear] = await Promise.all([
+      apiGet("Flood zone at point · FEMA NFHL", API.flood, { ...pointQuery, where: "SFHA_TF='T'", outFields: "FLD_ZONE" }).catch(() => null),
+      apiGet("100-yr flood zones nearby · FEMA NFHL", API.flood, { ...areaQuery, where: "SFHA_TF='T'" }).catch(() => null)
     ]);
 
     layers.address.clearLayers(); layers.hazards.clearLayers();
     if (floodNear) floodNear.features.forEach(f => L.polygon(ringsToLatLngs(f.geometry), { color: "#4f8fe0", weight: 1, fillColor: "#4f8fe0", fillOpacity: 0.4, interactive: false }).addTo(layers.hazards));
-    if (wuiNear) wuiNear.features.forEach(f => L.polygon(ringsToLatLngs(f.geometry), { color: "#e0a33a", weight: 1, fillColor: "#e0a33a", fillOpacity: 0.25, interactive: false }).addTo(layers.hazards));
     L.circleMarker([lat, lon], { radius: 8, color: "#fff", weight: 2.5, fillColor: "#e8604c", fillOpacity: 1 }).bindPopup(`<b>${esc(c.address)}</b>`).addTo(layers.address).openPopup();
     map.setView([lat, lon], 15);
 
@@ -404,13 +373,11 @@ async function checkAddress(text) {
     out.innerHTML = "";
     [
       ["Address", esc(c.address) + `<br><span class="src">Match score ${Math.round(c.score)}</span>`],
-      ["100-yr flood", yesNo(inFlood, "Inside", "Outside") + "100-year floodplain (county hazard mitigation layer)"],
-      ["Wildfire WUI", yesNo(inWui, "Inside", "Outside") + "Wildland-urban interface"],
-      ["District", dist && dist.features.length ? "Commissioner District " + dist.features[0].attributes.COM_DIST : "Not found"],
+      ["100-yr flood", yesNo(inFlood, "Inside", "Outside") + "FEMA Special Flood Hazard Area" + (inFlood && inFlood.features.length ? " (Zone " + esc(inFlood.features[0].attributes.FLD_ZONE) + ")" : "")],
       ["Nearest gauge", near ? `${esc(near.s.name)}<br><span class="src">${near.km.toFixed(1)} km away · ${fmt(near.s.q)} cfs now</span>` : "Gauges not loaded"]
     ].forEach(([k, v]) => { const r = document.createElement("div"); r.className = "row"; r.innerHTML = `<span class="k">${k}</span><span>${v}</span>`; out.append(r); });
   } catch (e) {
-    out.innerHTML = '<div class="empty">The county geocoder did not respond. See the API log.</div>';
+    out.innerHTML = '<div class="empty">The geocoder did not respond. See the API log.</div>';
   }
 }
 function nearestGauge(lat, lon) {
