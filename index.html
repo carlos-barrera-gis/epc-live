@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EPC Live Conditions</title>
+<meta name="description" content="Live map of El Paso County, Colorado: county GIS REST services, USGS stream gauges and National Weather Service alerts, queried in real time.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+/* Layout: full-height operations view. Map on the left, a scrolling control panel on the right
+   (address check, gauges, alerts, API log). Stacks map-over-panel on phones. Single dark look. */
+:root{
+  color-scheme: dark;
+  --navy:#0f1b2d; --panel:#132238; --panel2:#182a44; --line:#2a3d5a;
+  --ivory:#f3eee3; --muted:#9fb0c6; --cyan:#3fc1c9; --gold:#d4a43a;
+  --ok:#4fbf7f; --warn:#e0a33a; --bad:#e8604c; --flood:#4f8fe0;
+  --f-display:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;
+  --f-body:"IBM Plex Sans","Segoe UI",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--navy);color:var(--ivory);font:14px/1.45 var(--f-body)}
+a{color:var(--cyan)}
+.app{display:grid;grid-template-columns:minmax(0,1fr) 420px;grid-template-rows:auto minmax(0,1fr);height:100%}
+header{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px 24px;align-items:center;justify-content:space-between;padding:10px max(16px,env(safe-area-inset-right,0px)) 10px max(16px,env(safe-area-inset-left,0px));border-bottom:1px solid var(--line);background:#0b1524}
+header h1{font:700 22px/1.1 var(--f-display);letter-spacing:.02em;margin:0}
+header .eyebrow{font:500 11px var(--f-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--gold)}
+.hstat{display:flex;gap:16px;align-items:center;font:12px var(--f-mono);color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block;margin-right:6px;box-shadow:0 0 0 3px rgba(79,191,127,.2)}
+button{font:600 13px var(--f-body);color:var(--navy);background:var(--cyan);border:0;border-radius:6px;padding:9px 14px;cursor:pointer}
+button.ghost{background:transparent;color:var(--cyan);border:1px solid var(--cyan)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.mapwrap{position:relative;min-height:0}
+#map{position:absolute;inset:0;background:#0b1524}
+.legend{position:absolute;left:12px;bottom:24px;z-index:500;background:rgba(11,21,36,.92);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;display:grid;gap:5px;max-width:230px}
+.legend b{font:600 11px var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.legend span{display:flex;align-items:center;gap:8px}
+.sw{width:18px;height:12px;border-radius:2px;flex:0 0 18px}
+aside{overflow-y:auto;background:var(--panel);border-left:1px solid var(--line);min-width:0}
+section{padding:16px max(16px,env(safe-area-inset-right,0px)) 16px 18px;border-bottom:1px solid var(--line)}
+h2{font:700 14px var(--f-display);letter-spacing:.08em;text-transform:uppercase;margin:0 0 4px;display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+h2 small{font:400 11px var(--f-mono);letter-spacing:0;text-transform:none;color:var(--muted)}
+.src{font:11px var(--f-mono);color:var(--muted);margin:0 0 10px}
+form{display:flex;gap:8px}
+label.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+input[type=text]{flex:1;min-width:0;font:14px var(--f-body);color:var(--ivory);background:var(--navy);border:1px solid var(--line);border-radius:6px;padding:9px 10px}
+.examples{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.examples button{background:var(--panel2);color:var(--muted);font:500 12px var(--f-body);padding:5px 9px;border:1px solid var(--line)}
+.result{margin-top:12px;display:grid;gap:8px}
+.row{display:grid;grid-template-columns:120px minmax(0,1fr);gap:10px;align-items:start;padding:8px 10px;background:var(--panel2);border-radius:6px}
+.row .k{font:500 11px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding-top:2px}
+.pill{display:inline-block;font:600 11px var(--f-mono);padding:2px 7px;border-radius:3px;margin-right:6px}
+.pill.yes{background:var(--bad);color:#fff}.pill.no{background:#24405f;color:var(--ivory)}.pill.mid{background:var(--warn);color:#1b1306}
+.gauges{display:grid;gap:4px;margin:0;padding:0;list-style:none}
+.gauges li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 8px;border-radius:5px;cursor:pointer}
+.gauges li:hover,.gauges li:focus-visible{background:var(--panel2);outline:none}
+.gauges .n{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gauges .v{font:500 13px var(--f-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.bar{height:3px;background:var(--line);border-radius:2px;grid-column:1/-1}
+.bar i{display:block;height:100%;background:var(--cyan);border-radius:2px}
+.alert{padding:10px;border-radius:6px;background:var(--panel2);border-left:0;display:grid;gap:4px;margin-bottom:6px}
+.alert .t{font-weight:600}
+.alert .d{color:var(--muted);font-size:12.5px}
+.empty{color:var(--muted);font-size:13px;padding:8px 10px;background:var(--panel2);border-radius:6px}
+.log{font:11.5px/1.4 var(--f-mono);display:grid;gap:6px}
+.log .e{padding:8px;background:#0b1524;border:1px solid var(--line);border-radius:6px;display:grid;gap:3px}
+.log .h{display:flex;justify-content:space-between;gap:8px}
+.log .ok{color:var(--ok)}.log .err{color:var(--bad)}
+.log code{color:var(--muted);word-break:break-all}
+.log .copy{background:none;color:var(--cyan);padding:0;font:500 11px var(--f-mono);border:0;justify-self:start}
+footer{padding:14px 18px;font-size:12px;color:var(--muted)}
+.leaflet-container{font-family:var(--f-body)}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--panel);color:var(--ivory);border:1px solid var(--line)}
+.leaflet-popup-content{margin:10px 12px;font-size:13px;line-height:1.4}
+.leaflet-popup-content b{font-family:var(--f-display);font-size:15px}
+.leaflet-control-attribution{background:rgba(11,21,36,.8)!important;color:var(--muted)!important;font-size:10px}
+.leaflet-control-attribution a{color:var(--cyan)!important}
+.leaflet-bar a{background:var(--panel)!important;color:var(--ivory)!important;border-color:var(--line)!important}
+.distlbl{background:none;border:0;box-shadow:none;color:var(--gold);font:700 13px var(--f-display);letter-spacing:.06em;text-shadow:0 0 3px #000,0 0 3px #000}
+.distlbl:before{display:none}
+@media (max-width:900px){
+  .app{grid-template-columns:1fr;grid-template-rows:auto 60vh auto;height:auto}
+  aside{border-left:0;border-top:1px solid var(--line);overflow:visible}
+  .legend{max-width:180px;font-size:11px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <div class="eyebrow">El Paso County, Colorado · live public data</div>
+      <h1>EPC Live Conditions</h1>
+    </div>
+    <div class="hstat">
+      <span id="status"><span class="dot"></span>Loading live data…</span>
+      <button id="refresh" class="ghost" type="button">Refresh data</button>
+    </div>
+  </header>
+
+  <div class="mapwrap">
+    <div id="map" role="application" aria-label="Map of El Paso County with live stream gauges, hazard layers and commissioner districts"></div>
+    <div class="legend" aria-label="Legend">
+      <b>Legend</b>
+      <span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="#3fc1c9" fill-opacity=".85" stroke="#0f1b2d"/></svg>USGS stream gauge (size = flow)</span>
+      <span><i class="sw" style="background:rgba(79,143,224,.45);border:1px solid #4f8fe0"></i>100-year floodplain (near searched address)</span>
+      <span><i class="sw" style="background:rgba(224,163,58,.35);border:1px solid #e0a33a"></i>Wildland-urban interface (near searched address)</span>
+      <span><i class="sw" style="border:2px solid #d4a43a"></i>Commissioner district</span>
+      <span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="#e8604c" stroke="#fff" stroke-width="2"/></svg>Searched address</span>
+    </div>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Check an address</h2>
+      <p class="src">County geocoder → floodplain, WUI and district queries</p>
+      <form id="addrForm">
+        <label class="sr" for="addr">Address in El Paso County</label>
+        <input type="text" id="addr" placeholder="e.g. 200 S Cascade Ave, Colorado Springs" autocomplete="off">
+        <button type="submit">Check</button>
+      </form>
+      <div class="examples" aria-label="Example addresses">
+        <button type="button" data-addr="200 S Cascade Ave, Colorado Springs">200 S Cascade Ave</button>
+        <button type="button" data-addr="2880 International Cir, Colorado Springs">2880 International Cir</button>
+        <button type="button" data-addr="11975 Black Forest Rd, Colorado Springs">Black Forest Rd</button>
+      </div>
+      <div class="result" id="result"></div>
+    </section>
+
+    <section>
+      <h2>Stream gauges <small id="gTime"></small></h2>
+      <p class="src">USGS Water Services · instantaneous values · county 08041</p>
+      <ul class="gauges" id="gauges"><li class="empty">Loading gauges…</li></ul>
+    </section>
+
+    <section>
+      <h2>Weather alerts <small id="aTime"></small></h2>
+      <p class="src">National Weather Service API · zone COC041 (El Paso County)</p>
+      <div id="alerts"><div class="empty">Loading alerts…</div></div>
+    </section>
+
+    <section>
+      <h2>API log <small>every request this page made</small></h2>
+      <p class="src">Live REST calls, newest first. Copy any URL to run it yourself.</p>
+      <div class="log" id="log"></div>
+    </section>
+
+    <footer>
+      Built by Carlos Barrera. Data from El Paso County public GIS REST services, USGS Water Services and the National Weather Service. Not an official county product; verify conditions with official sources.
+    </footer>
+  </aside>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* ============================================================
+   EPC Live Conditions
+   Every data source below is a public REST API. The page calls
+   them from the browser with fetch(), logs each call, and draws
+   the results with Leaflet.
+   ============================================================ */
+
+// ---- 1. The APIs ------------------------------------------------
+const EPC = "https://gisservices.elpasoco.com/arcgis2/rest/services/Public";
+const API = {
+  geocode:   EPC + "/EPCPortalLocator2026/GeocodeServer/findAddressCandidates",
+  hazards:   EPC + "/TetraTechPPROEMHazards/FeatureServer",   // layer 7 = FL100, 1 = WUI, 9 = County boundary
+  districts: EPC + "/CommissionerDistricts/FeatureServer/0/query",
+  usgs:      "https://waterservices.usgs.gov/nwis/iv/",
+  nws:       "https://api.weather.gov/alerts/active"
+};
+const LAYER = { FL100: 7, WUI: 1, COUNTY: 9 };
+
+// ---- 2. A logged fetch: times every request and shows it in the API log
+async function apiGet(label, base, params) {
+  const url = base + "?" + new URLSearchParams(params).toString();
+  const t0 = performance.now();
+  try {
+    const res = await fetch(url, { headers: { Accept: "application/json, application/geo+json" } });
+    const ms = Math.round(performance.now() - t0);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (data && data.error) throw new Error(data.error.message || "Service error");
+    logCall(label, url, true, ms, countOf(data));
+    return data;
+  } catch (err) {
+    logCall(label, url, false, Math.round(performance.now() - t0), err.message);
+    throw err;
+  }
+}
+function countOf(d) {
+  if (!d) return "";
+  if (Array.isArray(d.features)) return d.features.length + " features";
+  if (Array.isArray(d.candidates)) return d.candidates.length + " candidates";
+  if (d.value && Array.isArray(d.value.timeSeries)) return d.value.timeSeries.length + " time series";
+  return "";
+}
+function logCall(label, url, ok, ms, info) {
+  const box = document.getElementById("log");
+  const e = document.createElement("div");
+  e.className = "e";
+  const h = document.createElement("div"); h.className = "h";
+  const l = document.createElement("span"); l.textContent = label;
+  const s = document.createElement("span"); s.className = ok ? "ok" : "err";
+  s.textContent = (ok ? "200 OK" : "FAILED") + " · " + ms + " ms" + (info ? " · " + info : "");
+  h.append(l, s);
+  const c = document.createElement("code"); c.textContent = url;
+  const b = document.createElement("button"); b.className = "copy"; b.type = "button"; b.textContent = "Copy URL";
+  b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(url); b.textContent = "Copied"; }
+    catch { const r = document.createRange(); r.selectNodeContents(c); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); b.textContent = "Selected, press Ctrl+C"; }
+    setTimeout(() => (b.textContent = "Copy URL"), 1800);
+  });
+  e.append(h, c, b);
+  box.prepend(e);
+}
+
+// ---- 3. The map -------------------------------------------------
+const map = L.map("map", { zoomControl: true }).setView([38.86, -104.73], 10);
+const darkGray = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 16, attribution: "Basemap: Esri, HERE, Garmin, © OpenStreetMap contributors"
+}).addTo(map);
+const imagery = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 19, attribution: "Imagery: Esri, Maxar, Earthstar Geographics"
+});
+L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 16, pane: "overlayPane"
+}).addTo(map);
+
+const layers = {
+  county: L.layerGroup().addTo(map),
+  districts: L.layerGroup().addTo(map),
+  hazards: L.layerGroup().addTo(map),
+  gauges: L.layerGroup().addTo(map),
+  address: L.layerGroup().addTo(map)
+};
+L.control.layers({ "Dark gray": darkGray, "Imagery": imagery },
+  { "Stream gauges": layers.gauges, "Commissioner districts": layers.districts, "Hazards near address": layers.hazards }, { position: "topright" }).addTo(map);
+
+// Esri JSON polygon (rings) -> Leaflet [lat,lng] rings
+const ringsToLatLngs = g => (g && g.rings ? g.rings.map(r => r.map(([x, y]) => [y, x])) : []);
+
+// ---- 4. County layers: boundary and commissioner districts ------
+async function loadCounty() {
+  try {
+    const d = await apiGet("County boundary · EPC FeatureServer", `${API.hazards}/${LAYER.COUNTY}/query`, {
+      where: "1=1", outFields: "", returnGeometry: true, outSR: 4326, maxAllowableOffset: 0.001, f: "json"
+    });
+    d.features.forEach(f => L.polygon(ringsToLatLngs(f.geometry), { color: "#9fb0c6", weight: 1.5, fill: false, dashArray: "4 4", interactive: false }).addTo(layers.county));
+  } catch (e) {}
+  try {
+    const d = await apiGet("Commissioner districts · EPC FeatureServer", API.districts, {
+      where: "1=1", outFields: "COM_DIST", returnGeometry: true, outSR: 4326, maxAllowableOffset: 0.0008, f: "json"
+    });
+    d.features.forEach(f => {
+      const p = L.polygon(ringsToLatLngs(f.geometry), { color: "#d4a43a", weight: 2, fillOpacity: 0.03 })
+        .bindTooltip("District " + f.attributes.COM_DIST, { permanent: true, direction: "center", className: "distlbl" })
+        .addTo(layers.districts);
+    });
+  } catch (e) {}
+}
+
+// ---- 5. USGS stream gauges --------------------------------------
+async function loadGauges() {
+  const list = document.getElementById("gauges");
+  try {
+    const d = await apiGet("Stream gauges · USGS Water Services", API.usgs, {
+      format: "json", countyCd: "08041", parameterCd: "00060,00065", siteStatus: "active"
+    });
+    const sites = {};
+    d.value.timeSeries.forEach(ts => {
+      const si = ts.sourceInfo, code = si.siteCode[0].value;
+      const v = ts.values[0] && ts.values[0].value[0];
+      const s = sites[code] || (sites[code] = {
+        code, name: titleCase(si.siteName),
+        lat: si.geoLocation.geogLocation.latitude, lon: si.geoLocation.geogLocation.longitude
+      });
+      if (!v) return;
+      const num = parseFloat(v.value);
+      if (isNaN(num) || num <= -999999) return;
+      const age = (Date.now() - Date.parse(v.dateTime)) / 3.6e6;
+      if (age > 24) return;                         // skip readings older than a day
+      if (ts.variable.variableCode[0].value === "00060") { s.q = num; s.time = v.dateTime; }
+      else s.gh = num;
+    });
+    const live = Object.values(sites).filter(s => s.q != null).sort((a, b) => b.q - a.q);
+    layers.gauges.clearLayers(); list.innerHTML = "";
+    if (!live.length) { list.innerHTML = '<li class="empty">No gauges reported in the last 24 hours.</li>'; return; }
+    const max = live[0].q || 1;
+    live.forEach(s => {
+      const r = 4 + 14 * Math.sqrt(s.q / max);
+      const html = `<b>${esc(s.name)}</b><br>USGS ${s.code}<br>Flow: <b>${fmt(s.q)} cfs</b>` +
+        (s.gh != null ? `<br>Gage height: ${s.gh.toFixed(2)} ft` : "") +
+        `<br><span style="color:#9fb0c6">${new Date(s.time).toLocaleString()}</span>` +
+        `<br><a href="https://waterdata.usgs.gov/monitoring-location/${s.code}/" target="_blank" rel="noopener">USGS site page</a>`;
+      const m = L.circleMarker([s.lat, s.lon], { radius: r, color: "#0f1b2d", weight: 1.5, fillColor: "#3fc1c9", fillOpacity: 0.85 })
+        .bindPopup(html).addTo(layers.gauges);
+      s.marker = m;
+      const li = document.createElement("li"); li.tabIndex = 0;
+      li.innerHTML = `<span class="n">${esc(s.name)}</span><span class="v">${fmt(s.q)} cfs</span><span class="bar"><i style="width:${Math.max(3, 100 * s.q / max)}%"></i></span>`;
+      const go = () => { map.setView([s.lat, s.lon], 13); m.openPopup(); };
+      li.addEventListener("click", go); li.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+      list.append(li);
+    });
+    document.getElementById("gTime").textContent = live.length + " reporting · " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    window.__gauges = live;
+  } catch (e) {
+    list.innerHTML = '<li class="empty">USGS gauges could not be loaded. See the API log.</li>';
+  }
+}
+
+// ---- 6. NWS alerts ----------------------------------------------
+async function loadAlerts() {
+  const box = document.getElementById("alerts");
+  try {
+    const d = await apiGet("Weather alerts · NWS API", API.nws, { zone: "COC041" });
+    box.innerHTML = "";
+    if (!d.features.length) { box.innerHTML = '<div class="empty">No active NWS alerts for El Paso County.</div>'; }
+    d.features.forEach(f => {
+      const p = f.properties, sev = (p.severity || "").toLowerCase();
+      const div = document.createElement("div"); div.className = "alert";
+      div.innerHTML = `<div><span class="pill ${sev === "extreme" || sev === "severe" ? "yes" : "mid"}">${esc(p.severity || "Alert")}</span><span class="t">${esc(p.event)}</span></div>` +
+        `<div class="d">${esc(p.headline || "")}</div><div class="d">Until ${p.ends || p.expires ? new Date(p.ends || p.expires).toLocaleString() : "further notice"}</div>`;
+      box.append(div);
+      if (f.geometry) L.geoJSON(f.geometry, { style: { color: "#e8604c", weight: 2, fillOpacity: 0.12 } }).bindPopup(`<b>${esc(p.event)}</b><br>${esc(p.headline || "")}`).addTo(layers.hazards);
+    });
+    document.getElementById("aTime").textContent = d.features.length + " active";
+  } catch (e) {
+    box.innerHTML = '<div class="empty">NWS alerts could not be loaded. See the API log.</div>';
+  }
+}
+
+// ---- 7. Address check: geocode, then spatial queries ------------
+async function checkAddress(text) {
+  const out = document.getElementById("result");
+  out.innerHTML = '<div class="empty">Looking up the address…</div>';
+  try {
+    const g = await apiGet("Geocode address · EPC GeocodeServer", API.geocode, {
+      SingleLine: text, Address: text, outSR: 4326, maxLocations: 1, outFields: "Match_addr,Addr_type", f: "json"
+    });
+    if (!g.candidates || !g.candidates.length) { out.innerHTML = '<div class="empty">No match in the county locator. Try a full street address.</div>'; return; }
+    const c = g.candidates[0], lon = c.location.x, lat = c.location.y;
+    const pt = JSON.stringify({ x: lon, y: lat, spatialReference: { wkid: 4326 } });
+    const pointQuery = { geometry: pt, geometryType: "esriGeometryPoint", inSR: 4326, spatialRel: "esriSpatialRelIntersects", returnGeometry: false, f: "json" };
+    const env = JSON.stringify({ xmin: lon - 0.012, ymin: lat - 0.009, xmax: lon + 0.012, ymax: lat + 0.009, spatialReference: { wkid: 4326 } });
+    const areaQuery = { geometry: env, geometryType: "esriGeometryEnvelope", inSR: 4326, spatialRel: "esriSpatialRelIntersects", returnGeometry: true, outSR: 4326, maxAllowableOffset: 0.00003, resultRecordCount: 300, outFields: "", f: "json" };
+
+    // Run the queries in parallel
+    const [inFlood, inWui, dist, floodNear, wuiNear] = await Promise.all([
+      apiGet("Floodplain at point · FL100", `${API.hazards}/${LAYER.FL100}/query`, { ...pointQuery, outFields: "" }).catch(() => null),
+      apiGet("WUI at point · WUI", `${API.hazards}/${LAYER.WUI}/query`, { ...pointQuery, outFields: "" }).catch(() => null),
+      apiGet("District at point · Commissioner Districts", API.districts, { ...pointQuery, outFields: "COM_DIST" }).catch(() => null),
+      apiGet("Floodplain nearby · FL100", `${API.hazards}/${LAYER.FL100}/query`, areaQuery).catch(() => null),
+      apiGet("WUI nearby · WUI", `${API.hazards}/${LAYER.WUI}/query`, areaQuery).catch(() => null)
+    ]);
+
+    layers.address.clearLayers(); layers.hazards.clearLayers();
+    if (floodNear) floodNear.features.forEach(f => L.polygon(ringsToLatLngs(f.geometry), { color: "#4f8fe0", weight: 1, fillColor: "#4f8fe0", fillOpacity: 0.4, interactive: false }).addTo(layers.hazards));
+    if (wuiNear) wuiNear.features.forEach(f => L.polygon(ringsToLatLngs(f.geometry), { color: "#e0a33a", weight: 1, fillColor: "#e0a33a", fillOpacity: 0.25, interactive: false }).addTo(layers.hazards));
+    L.circleMarker([lat, lon], { radius: 8, color: "#fff", weight: 2.5, fillColor: "#e8604c", fillOpacity: 1 }).bindPopup(`<b>${esc(c.address)}</b>`).addTo(layers.address).openPopup();
+    map.setView([lat, lon], 15);
+
+    const near = nearestGauge(lat, lon);
+    const yesNo = (d, yes, no) => !d ? '<span class="pill mid">Unavailable</span>' : d.features.length ? `<span class="pill yes">${yes}</span>` : `<span class="pill no">${no}</span>`;
+    out.innerHTML = "";
+    [
+      ["Address", esc(c.address) + `<br><span class="src">Match score ${Math.round(c.score)}</span>`],
+      ["100-yr flood", yesNo(inFlood, "Inside", "Outside") + "100-year floodplain (county hazard mitigation layer)"],
+      ["Wildfire WUI", yesNo(inWui, "Inside", "Outside") + "Wildland-urban interface"],
+      ["District", dist && dist.features.length ? "Commissioner District " + dist.features[0].attributes.COM_DIST : "Not found"],
+      ["Nearest gauge", near ? `${esc(near.s.name)}<br><span class="src">${near.km.toFixed(1)} km away · ${fmt(near.s.q)} cfs now</span>` : "Gauges not loaded"]
+    ].forEach(([k, v]) => { const r = document.createElement("div"); r.className = "row"; r.innerHTML = `<span class="k">${k}</span><span>${v}</span>`; out.append(r); });
+  } catch (e) {
+    out.innerHTML = '<div class="empty">The county geocoder did not respond. See the API log.</div>';
+  }
+}
+function nearestGauge(lat, lon) {
+  const g = window.__gauges || []; let best = null;
+  g.forEach(s => { const km = haversine(lat, lon, s.lat, s.lon); if (!best || km < best.km) best = { s, km }; });
+  return best;
+}
+function haversine(a, b, c, d) {
+  const R = 6371, t = x => x * Math.PI / 180;
+  const h = Math.sin(t(c - a) / 2) ** 2 + Math.cos(t(a)) * Math.cos(t(c)) * Math.sin(t(d - b) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// ---- helpers ----------------------------------------------------
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+const fmt = n => n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(n >= 10 ? 1 : 2);
+const titleCase = s => s.toLowerCase().replace(/\b(\w)/g, m => m.toUpperCase()).replace(/\b(Co|Usaf|Usgs)\b\.?/g, m => m.toUpperCase()).replace(/\s+,/g, ",");
+
+// ---- start ------------------------------------------------------
+async function loadAll() {
+  const st = document.getElementById("status");
+  st.innerHTML = '<span class="dot"></span>Loading live data…';
+  await Promise.all([loadGauges(), loadAlerts()]);
+  st.innerHTML = '<span class="dot"></span>Live · updated ' + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+document.getElementById("refresh").addEventListener("click", loadAll);
+document.getElementById("addrForm").addEventListener("submit", e => { e.preventDefault(); const v = document.getElementById("addr").value.trim(); if (v) checkAddress(v); });
+document.querySelectorAll(".examples button").forEach(b => b.addEventListener("click", () => { document.getElementById("addr").value = b.dataset.addr; checkAddress(b.dataset.addr); }));
+loadCounty();
+loadAll();
+setInterval(loadAll, 10 * 60 * 1000);   // refresh every 10 minutes
+</script>
+</body>
+</html>
