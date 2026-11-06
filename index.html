@@ -107,8 +107,8 @@ footer{padding:14px 18px;font-size:12px;color:var(--muted)}
     <div class="legend" aria-label="Legend">
       <b>Legend</b>
       <span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="#3fc1c9" fill-opacity=".85" stroke="#0f1b2d"/></svg>USGS stream gauge (size = flow)</span>
-      <span><i class="sw" style="background:rgba(79,143,224,.45);border:1px solid #4f8fe0"></i>100-year floodplain (near searched address)</span>
-      <span><i class="sw" style="background:rgba(224,163,58,.35);border:1px solid #e0a33a"></i>Wildland-urban interface (near searched address)</span>
+      <span><i class="sw" style="background:rgba(79,143,224,.45);border:1px solid #4f8fe0"></i>100-year floodplain (county layer; highlighted near a searched address)</span>
+      <span><i class="sw" style="background:rgba(224,163,58,.35);border:1px solid #e0a33a"></i>Wildland-urban interface (turn on in the layer list)</span>
       <span><i class="sw" style="border:2px solid #d4a43a"></i>Commissioner district</span>
       <span><svg width="18" height="18" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="#e8604c" stroke="#fff" stroke-width="2"/></svg>Searched address</span>
     </div>
@@ -231,6 +231,40 @@ L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_D
   maxZoom: 16, pane: "overlayPane"
 }).addTo(map);
 
+// County hazard layers drawn by the county's own MapServer (export operation),
+// re-requested for the visible area every time the map moves.
+const HAZ_MS = EPC + "/TetraTechPPROEMHazards/MapServer/export";
+const floodImg = L.layerGroup().addTo(map), wuiImg = L.layerGroup();
+const loggedExport = {};
+// dynamicLayers lets the request set the colors, so the map matches this page's legend
+function dynLayer(id, rgb) {
+  return JSON.stringify([{ id, source: { type: "mapLayer", mapLayerId: id }, drawingInfo: { renderer: { type: "simple",
+    symbol: { type: "esriSFS", style: "esriSFSSolid", color: [...rgb, 150], outline: { type: "esriSLS", style: "esriSLSSolid", color: [...rgb, 255], width: 0.6 } } } } }]);
+}
+const HAZ_COLOR = { [LAYER.FL100]: [79, 143, 224], [LAYER.WUI]: [224, 163, 58] };
+function refreshHazardImage(group, layerId, label, opacity) {
+  if (!map.hasLayer(group)) return;
+  const b = map.getBounds(), s = map.getSize();
+  const params = { bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(","), bboxSR: 4326, imageSR: 3857,
+    size: s.x + "," + s.y, dynamicLayers: dynLayer(layerId, HAZ_COLOR[layerId]), transparent: true, format: "png32", dpi: 96, f: "image" };
+  const url = HAZ_MS + "?" + new URLSearchParams(params).toString();
+  const img = L.imageOverlay(url, b, { opacity, interactive: false });
+  const t0 = performance.now();
+  img.on("load", () => {
+    group.eachLayer(l => { if (l !== img) group.removeLayer(l); });
+    if (!loggedExport[label]) { loggedExport[label] = true; logCall(label + " · EPC MapServer export", url, true, Math.round(performance.now() - t0), "map image"); }
+  });
+  img.on("error", () => logCall(label + " · EPC MapServer export", url, false, Math.round(performance.now() - t0), "image failed"));
+  group.addLayer(img);
+}
+let hazTimer;
+function refreshHazards() {
+  clearTimeout(hazTimer);
+  hazTimer = setTimeout(() => { refreshHazardImage(floodImg, LAYER.FL100, "100-yr floodplain", 0.65); refreshHazardImage(wuiImg, LAYER.WUI, "Wildfire WUI", 0.45); }, 250);
+}
+map.on("moveend", refreshHazards);
+map.on("overlayadd", refreshHazards);
+
 const layers = {
   county: L.layerGroup().addTo(map),
   districts: L.layerGroup().addTo(map),
@@ -239,7 +273,8 @@ const layers = {
   address: L.layerGroup().addTo(map)
 };
 L.control.layers({ "Dark gray": darkGray, "Imagery": imagery },
-  { "Stream gauges": layers.gauges, "Commissioner districts": layers.districts, "Hazards near address": layers.hazards }, { position: "topright" }).addTo(map);
+  { "100-year floodplain (county)": floodImg, "Wildland-urban interface (county)": wuiImg, "Stream gauges": layers.gauges,
+    "Commissioner districts": layers.districts, "Hazards near searched address": layers.hazards }, { position: "topright", collapsed: false }).addTo(map);
 
 // Esri JSON polygon (rings) -> Leaflet [lat,lng] rings
 const ringsToLatLngs = g => (g && g.rings ? g.rings.map(r => r.map(([x, y]) => [y, x])) : []);
@@ -406,6 +441,7 @@ document.getElementById("addrForm").addEventListener("submit", e => { e.preventD
 document.querySelectorAll(".examples button").forEach(b => b.addEventListener("click", () => { document.getElementById("addr").value = b.dataset.addr; checkAddress(b.dataset.addr); }));
 loadCounty();
 loadAll();
+refreshHazards();
 setInterval(loadAll, 10 * 60 * 1000);   // refresh every 10 minutes
 </script>
 </body>
